@@ -1,0 +1,57 @@
+name: Build Shade Client
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci --include=dev; else npm install --include=dev; fi
+      - run: npm run build
+      - run: npx --no-install playwright install --with-deps chromium
+      - run: npm run test:browser
+      - name: Package extension
+        run: |
+          mkdir -p release/shade-client
+          cp -a dist/. release/shade-client/
+          (cd release && zip -qr ../shade-client.zip shade-client)
+          unzip -t shade-client.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shade-client
+          path: shade-client.zip
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: shade-client
+      - name: Attach ZIP to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" shade-client.zip --clobber
