@@ -5,6 +5,27 @@ let masterEnabled = true;
 let promptedOrigin = null;
 let promptAction = 'open';
 let busy = false;
+const params = new URLSearchParams(location.search);
+const standalone = params.get('window') === '1';
+if (standalone) document.body.classList.add('standalone');
+async function connectionWindow(profile = null, mode = 'open') {
+  const url = new URL(chrome.runtime.getURL('popup.html'));
+  url.searchParams.set('window', '1');
+  if (profile) {
+    url.searchParams.set('profile', profile.origin);
+    url.searchParams.set('mode', mode);
+  }
+  // A real browser window survives the browser's optional-host permission dialog.
+  // Only public profile identifiers are passed in the URL, never a password.
+  await chrome.windows.create({url: url.href, type: 'popup', width: 420, height: 650, focused: true});
+  if (!standalone) window.close();
+}
+async function hasPermission(origin) {
+  return chrome.permissions.contains({origins: [hostPermission(origin)]});
+}
+function showAdd() {
+  hideForms(); $('addForm').hidden = false; $('address').focus();
+}
 function status(text, error = false) {
   $('status').textContent = text;
   $('status').style.color = error ? '#ff9a9f' : '#b1bfd4';
@@ -19,10 +40,10 @@ async function message(payload) {
 }
 async function requirePermission(origin) {
   const pattern = hostPermission(origin);
-  if (!await chrome.permissions.contains({origins: [pattern]})) {
-    if (!await chrome.permissions.request({origins: [pattern]}))
-      throw new Error('Chromium не разрешил доступ к выбранному сайту');
-  }
+  // Call directly from the button event, before any unrelated await, to keep
+  // the user gesture required by Chromium. Already granted permissions resolve true.
+  if (!await chrome.permissions.request({origins: [pattern]}))
+    throw new Error('Браузер не разрешил доступ к выбранному сайту');
 }
 function hideForms() {
   $('addForm').hidden = true;
@@ -93,7 +114,10 @@ async function run(fn) {
 }
 async function openProfile(profile) {
   await run(async () => {
-    await requirePermission(profile.origin);
+    if (!await hasPermission(profile.origin)) {
+      if (!standalone) return connectionWindow(profile, 'open');
+      return showPrompt(profile, 'open');
+    }
     const result = await message({action:'open',origin:profile.origin});
     if (result.needPassword) return showPrompt(profile, 'open');
     window.close();
@@ -101,7 +125,10 @@ async function openProfile(profile) {
 }
 async function changeProfile(profile, enabled) {
   await run(async () => {
-    if (enabled) await requirePermission(profile.origin);
+    if (enabled && !await hasPermission(profile.origin)) {
+      if (!standalone) return connectionWindow(profile, 'toggle');
+      return showPrompt(profile, 'toggle');
+    }
     const r = await message({action:'toggleSite',origin:profile.origin,enabled});
     if (r.needPassword) return showPrompt(profile, 'toggle');
     if (r.publicOnly) { status('Открыта только публичная версия. Для скрытого доступа потребуется повторный вход.'); await refresh(); return; }
@@ -116,13 +143,14 @@ $('masterSwitch').onchange = () => run(async () => {
   if (desired) status('Shade включён. Сохранённые сайты можно подключать.');
   else status(r.remoteFailures ? `Shade отключён. ${r.remoteFailures} сеанс(ов) не удалось отозвать на сервере.` : 'Все подключения Shade отключены.');
 });
-$('addToggle').onclick = () => { hideForms(); $('addForm').hidden = false; $('address').focus(); };
+$('addToggle').onclick = () => run(async () => { if (standalone) showAdd(); else await connectionWindow(); });
 $('cancel').onclick = hideForms;
 $('cancelPrompt').onclick = hideForms;
 $('connect').onclick = () => run(async () => {
   const url = $('address').value.trim(); const password = $('password').value;
   if (!password) throw new Error('Введите пароль');
   const {origin} = normalizeAddress(url);
+  if (!standalone) throw new Error('Откройте окно добавления сайта через кнопку «+ Сайт»');
   await requirePermission(origin);
   status('Подключение…');
   const r = await message({action:'connect',url,password});
@@ -134,7 +162,12 @@ $('submitProfile').onclick = () => run(async () => {
   if (!promptedOrigin) return;
   const password = $('profilePassword').value;
   if (!password) throw new Error('Введите пароль');
-  await requirePermission(promptedOrigin);
+  if (standalone) await requirePermission(promptedOrigin);
+  else if (!await hasPermission(promptedOrigin)) {
+    const profile = profiles.find(p => p.origin === promptedOrigin);
+    if (profile) return connectionWindow(profile, promptAction);
+    throw new Error('Профиль не найден');
+  }
   const args = promptAction === 'toggle'
     ? {action:'toggleSite',origin:promptedOrigin,enabled:true,password}
     : {action:'open',origin:promptedOrigin,password};
@@ -149,4 +182,9 @@ $('submitProfile').onclick = () => run(async () => {
 });
 $('password').onkeydown = e => {if(e.key === 'Enter') $('connect').click();};
 $('profilePassword').onkeydown = e => {if(e.key === 'Enter') $('submitProfile').click();};
-refresh().then(() => { if (!profiles.length && masterEnabled) $('addForm').hidden = false; }).catch(err => status(err.message, true));
+refresh().then(() => {
+  if (!standalone || !masterEnabled) return;
+  const profile = profiles.find(p => p.origin === params.get('profile'));
+  if (profile) showPrompt(profile, params.get('mode') === 'toggle' ? 'toggle' : 'open');
+  else showAdd();
+}).catch(err => status(err.message, true));

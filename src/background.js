@@ -28,6 +28,7 @@ async function settings() {
   return {profiles, enabled: shadeEnabled !== false};
 }
 async function sessionCookie(origin) {
+  if (!await chrome.permissions.contains({origins: [hostPermission(origin)]})) return null;
   return chrome.cookies.get({url: origin + '/', name: gatewayCookieName(origin)});
 }
 async function sendLogin(origin, password) {

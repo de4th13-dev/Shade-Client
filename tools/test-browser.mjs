@@ -28,7 +28,13 @@ try {
   assert.equal(result.enabled, true);
   assert.deepEqual(result.profiles, []);
   await page.locator('#masterSwitch').waitFor({state: 'visible'});
-  console.log('Chromium: service worker and popup OK');
+  const connectionPromise = context.waitForEvent('page', {timeout:10000});
+  await page.locator('#addToggle').click();
+  const connection = await connectionPromise;
+  await connection.waitForURL(`chrome-extension://${id}/popup.html?window=1`);
+  await connection.locator('#address').waitFor({state:'visible'});
+  assert.equal(await connection.locator('#password').inputValue(), '');
+  console.log('Chromium: service worker, popup and persistent connection window OK');
 } finally {
   try { await context?.close(); } finally { await rm(profile, {recursive:true, force:true}); }
 }
