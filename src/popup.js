@@ -1,4 +1,5 @@
 import {hostPermission, hostnameLabel, normalizeAddress} from './navigation.mjs';
+const api = globalThis.browser ?? globalThis.chrome;
 const $ = id => document.getElementById(id);
 let profiles = [];
 let masterEnabled = true;
@@ -9,7 +10,7 @@ const params = new URLSearchParams(location.search);
 const standalone = params.get('window') === '1';
 if (standalone) document.body.classList.add('standalone');
 async function connectionWindow(profile = null, mode = 'open') {
-  const url = new URL(chrome.runtime.getURL('popup.html'));
+  const url = new URL(api.runtime.getURL('popup.html'));
   url.searchParams.set('window', '1');
   if (profile) {
     url.searchParams.set('profile', profile.origin);
@@ -17,11 +18,11 @@ async function connectionWindow(profile = null, mode = 'open') {
   }
   // A real browser window survives the browser's optional-host permission dialog.
   // Only public profile identifiers are passed in the URL, never a password.
-  await chrome.windows.create({url: url.href, type: 'popup', width: 420, height: 650, focused: true});
+  await api.windows.create({url: url.href, type: 'popup', width: 420, height: 650, focused: true});
   if (!standalone) window.close();
 }
 async function hasPermission(origin) {
-  return chrome.permissions.contains({origins: [hostPermission(origin)]});
+  return api.permissions.contains({origins: [hostPermission(origin)]});
 }
 function showAdd() {
   hideForms(); $('addForm').hidden = false; $('address').focus();
@@ -31,7 +32,7 @@ function status(text, error = false) {
   $('status').style.color = error ? '#ff9a9f' : '#b1bfd4';
 }
 async function message(payload) {
-  const r = await chrome.runtime.sendMessage(payload);
+  const r = await api.runtime.sendMessage(payload);
   if (!r?.ok) {
     if (r?.needPassword) return r;
     throw new Error(r?.error || 'Неизвестная ошибка');
@@ -42,7 +43,7 @@ async function requirePermission(origin) {
   const pattern = hostPermission(origin);
   // Call directly from the button event, before any unrelated await, to keep
   // the user gesture required by Chromium. Already granted permissions resolve true.
-  if (!await chrome.permissions.request({origins: [pattern]}))
+  if (!await api.permissions.request({origins: [pattern]}))
     throw new Error('Браузер не разрешил доступ к выбранному сайту');
 }
 function hideForms() {

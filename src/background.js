@@ -2,6 +2,7 @@
 // Only trusted extension contexts communicate with this service worker.
 import {gatewayCookieName, normalizeAddress, hostPermission} from './navigation.mjs';
 import {ready, client} from '@serenity-kit/opaque';
+const api = globalThis.browser ?? globalThis.chrome;
 
 // Keep WASM initialization errors out of worker startup; login reports them.
 const cryptoReady = Promise.resolve(ready).then(() => null, error => error || new Error('OPAQUE initialization failed'));
@@ -12,24 +13,24 @@ const MASTER = 'shadeEnabled';
 // One-way migration: legacy reusable PBKDF/HMAC credentials MUST be discarded.
 const storageReady = (async () => {
   await Promise.allSettled([
-    chrome.storage.local.setAccessLevel({accessLevel: 'TRUSTED_CONTEXTS'}),
-    chrome.storage.session.setAccessLevel({accessLevel: 'TRUSTED_CONTEXTS'})
+    api.storage.local.setAccessLevel?.({accessLevel: 'TRUSTED_CONTEXTS'}),
+    api.storage.session?.setAccessLevel?.({accessLevel: 'TRUSTED_CONTEXTS'})
   ]);
   await Promise.all([
-    chrome.storage.local.remove(['savedKeys']),
-    chrome.storage.session.remove(['tempKeys'])
+    api.storage.local.remove(['savedKeys']),
+    api.storage.session?.remove(['tempKeys'])
   ]);
 })();
 
 // Manifest V3 service workers support static imports, not dynamic import().
 async function settings() {
   await storageReady;
-  const {profiles = [], shadeEnabled = true} = await chrome.storage.local.get([PROFILES, MASTER]);
+  const {profiles = [], shadeEnabled = true} = await api.storage.local.get([PROFILES, MASTER]);
   return {profiles, enabled: shadeEnabled !== false};
 }
 async function sessionCookie(origin) {
-  if (!await chrome.permissions.contains({origins: [hostPermission(origin)]})) return null;
-  return chrome.cookies.get({url: origin + '/', name: gatewayCookieName(origin)});
+  if (!await api.permissions.contains({origins: [hostPermission(origin)]})) return null;
+  return api.cookies.get({url: origin + '/', name: gatewayCookieName(origin)});
 }
 async function sendLogin(origin, password) {
   const initializationError = await cryptoReady;
@@ -65,7 +66,7 @@ async function sendLogin(origin, password) {
       typeof info.session_token !== 'string' ||
       !/^[A-Za-z0-9_-]{35,128}$/.test(info.session_token)) return false;
   const ttl = Math.min(86400, Math.max(10, Number(info.expires_in) || 0));
-  const cookie = await chrome.cookies.set({
+  const cookie = await api.cookies.set({
     url: origin + '/', name: gatewayCookieName(origin), value: info.session_token,
     path: '/', httpOnly: true, secure: origin.startsWith('https:'), sameSite: 'lax',
     expirationDate: Math.floor(Date.now() / 1000) + ttl
@@ -84,7 +85,7 @@ async function storeProfile(address, paused = false) {
   const {profiles} = await settings();
   const old = profiles.find(p => p.origin === origin);
   const record = {origin, homeUrl: homeUrl || old?.homeUrl || origin + '/', paused};
-  await chrome.storage.local.set({profiles: [record, ...profiles.filter(p => p.origin !== origin)]});
+  await api.storage.local.set({profiles: [record, ...profiles.filter(p => p.origin !== origin)]});
   return record;
 }
 
@@ -94,10 +95,10 @@ async function storeProfile(address, paused = false) {
 // permission is needed.
 async function reloadGatewayTabs(origin) {
   try {
-    const tabs = await chrome.tabs.query({url: hostPermission(origin)});
+    const tabs = await api.tabs.query({url: hostPermission(origin)});
     for (const tab of tabs) {
       if (tab.id !== undefined && tab.url && new URL(tab.url).origin === origin)
-        await chrome.tabs.reload(tab.id, {bypassCache: true});
+        await api.tabs.reload(tab.id, {bypassCache: true});
     }
   } catch (err) {
     console.warn('Shade: unable to refresh one or more disconnected tabs', err);
@@ -118,7 +119,7 @@ async function dropSession(origin) {
       });
       remoteRevoked = response.ok && (await response.json()).logged_out === true;
     } catch (_) { remoteRevoked = false; }
-    await chrome.cookies.remove({url: origin + '/', name: gatewayCookieName(origin)});
+    await api.cookies.remove({url: origin + '/', name: gatewayCookieName(origin)});
   }
   await reloadGatewayTabs(origin);
   return {remoteRevoked};
@@ -130,7 +131,7 @@ async function connect(message) {
   const logged = await doLogin(address.origin, message.password);
   if (logged.needPassword) return logged;
   const record = await storeProfile(message.url, false);
-  if (message.open !== false) await chrome.tabs.create({url: record.homeUrl});
+  if (message.open !== false) await api.tabs.create({url: record.homeUrl});
   return {ok: true, publicOnly: Boolean(logged.publicOnly)};
 }
 async function open(message) {
@@ -142,7 +143,7 @@ async function open(message) {
   if (profile.paused) return {ok: false, error: 'Этот сайт выключен. Включи соединение в его профиле.'};
   const logged = await doLogin(origin, message.password);
   if (logged.needPassword) return logged;
-  await chrome.tabs.create({url: profile.homeUrl});
+  await api.tabs.create({url: profile.homeUrl});
   return {ok: true, publicOnly: Boolean(logged.publicOnly)};
 }
 async function toggleSite(message) {
@@ -157,12 +158,12 @@ async function toggleSite(message) {
     const result = await doLogin(origin, message.password);
     if (result.needPassword || result.publicOnly) return {...result, ok: !result.needPassword};
     profile.paused = false;
-    await chrome.storage.local.set({profiles});
+    await api.storage.local.set({profiles});
     return {ok: true, enabled: true};
   }
   // Set paused before logout; any later open will be rejected.
   profile.paused = true;
-  await chrome.storage.local.set({profiles});
+  await api.storage.local.set({profiles});
   const result = await dropSession(origin);
   return {ok: true, enabled: false, ...result};
 }
@@ -170,7 +171,7 @@ async function toggleAll(message) {
   const enabled = message.enabled === true;
   const state = await settings();
   if (enabled === state.enabled) return {ok: true, enabled, remoteFailures: 0};
-  await chrome.storage.local.set({[MASTER]: enabled});
+  await api.storage.local.set({[MASTER]: enabled});
   if (!enabled) {
     let remoteFailures = 0;
     for (const profile of state.profiles) {
@@ -190,7 +191,7 @@ async function forget(message) {
   const origin = normalizeAddress(message.origin).origin;
   const result = await dropSession(origin);
   const {profiles} = await settings();
-  await chrome.storage.local.set({profiles: profiles.filter(p => p.origin !== origin)});
+  await api.storage.local.set({profiles: profiles.filter(p => p.origin !== origin)});
   return {ok: true, ...result};
 }
 async function status() {
@@ -212,17 +213,17 @@ function exclusive(action) {
 }
 const actions = {connect, open, toggleSite, toggleAll, disconnect, forget, status};
 const mutations = new Set(['connect', 'open', 'toggleSite', 'toggleAll', 'disconnect', 'forget']);
-chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
-  if (!msg || !Object.hasOwn(actions, msg.action)) return false;
+api.runtime.onMessage.addListener((msg, _sender, reply) => {
+  if (_sender.id !== api.runtime.id || !msg || !Object.hasOwn(actions, msg.action)) return false;
   const task = () => actions[msg.action](msg);
   const promise = mutations.has(msg.action) ? exclusive(task) : mutationQueue.then(task);
   promise.then(reply).catch(err => reply({ok: false, error: err.message || String(err)}));
   return true;
 });
-chrome.omnibox.onInputChanged.addListener((input, suggest) => {
+api.omnibox.onInputChanged.addListener((input, suggest) => {
   suggest([{content: input, description: 'Открыть включённый профиль Shade'}]);
 });
-chrome.omnibox.onInputEntered.addListener(input => {
+api.omnibox.onInputEntered.addListener(input => {
   exclusive(async () => {
     const {profiles, enabled} = await settings();
     if (!enabled) return;
@@ -230,7 +231,12 @@ chrome.omnibox.onInputEntered.addListener(input => {
     const p = profiles.find(p => new URL(p.origin).host.toLowerCase() === q || p.origin.toLowerCase() === q);
     if (!p || p.paused) return;
     const result = await doLogin(p.origin);
-    if (result.needPassword) return chrome.action.openPopup();
-    await chrome.tabs.create({url: p.homeUrl});
+    if (result.needPassword) {
+      const url = new URL(api.runtime.getURL('popup.html'));
+      url.searchParams.set('window', '1');
+      url.searchParams.set('profile', p.origin);
+      return api.windows.create({url: url.href, type: 'popup', width: 420, height: 650, focused: true});
+    }
+    await api.tabs.create({url: p.homeUrl});
   }).catch(err => console.warn('Shade omnibox', err));
 });

@@ -3,11 +3,17 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {build} from 'esbuild';
 import {spawnSync} from 'node:child_process';
+import {manifestFor} from './manifests.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const src = path.join(root, 'src');
-const dest = path.join(root, 'dist');
+const targets = process.argv.slice(2);
+if (!targets.length) targets.push('chromium', 'firefox');
+for (const target of targets) {
+const manifest = manifestFor(target);
+const dest = path.join(root, 'dist', target);
+fs.mkdirSync(path.dirname(dest), {recursive:true});
 const stage = fs.mkdtempSync(path.join(root, '.shade-build-'));
-const backup = path.join(root, '.shade-dist-backup');
+const backup = path.join(root, `.shade-dist-backup-${target}`);
 try {
   // The extension must never have unresolved module imports or fetch code from a CDN.
   for (const name of ['background.js', 'popup.js']) {
@@ -15,7 +21,7 @@ try {
     const result = await build({
       absWorkingDir: root,
       entryPoints: [path.join(src, name)], outfile,
-      bundle: true, platform: 'browser', format: 'esm', target: 'chrome116',
+      bundle: true, platform: 'browser', format: 'esm', target: target === 'firefox' ? 'firefox140' : 'chrome116',
       legalComments: 'eof', loader: {'.wasm': 'binary'},
       metafile: true, logLevel: 'warning',
     });
@@ -26,13 +32,13 @@ try {
     const check = spawnSync(process.execPath, ['--check', outfile], {stdio:'inherit'});
     if (check.status !== 0) throw new Error(`JavaScript validation failed: ${name}`);
   }
-  for (const name of ['manifest.json','popup.html']) fs.copyFileSync(path.join(src,name),path.join(stage,name));
+  fs.copyFileSync(path.join(src,'popup.html'),path.join(stage,'popup.html'));
+  fs.writeFileSync(path.join(stage,'manifest.json'), JSON.stringify(manifest,null,2)+'\n');
   fs.mkdirSync(path.join(stage,'icons'));
   for (const name of ['shade-16.png','shade-32.png','shade-48.png','shade-128.png']) {
     fs.copyFileSync(path.join(src,'icons',name),path.join(stage,'icons',name));
   }
-  const manifest = JSON.parse(fs.readFileSync(path.join(stage,'manifest.json'),'utf8'));
-  const files = [manifest.background.service_worker, manifest.action.default_popup,
+  const files = [manifest.background.service_worker ?? manifest.background.scripts[0], manifest.action.default_popup,
     ...Object.values(manifest.icons), ...Object.values(manifest.action.default_icon)];
   for (const file of files) if (!fs.statSync(path.join(stage,file)).isFile()) throw new Error(`Missing manifest file: ${file}`);
   const pkg = path.join(root,'node_modules','@serenity-kit','opaque');
@@ -48,4 +54,5 @@ try {
   console.log(`Готовая папка расширения: ${dest}`);
 } finally {
   fs.rmSync(stage,{recursive:true,force:true});
+}
 }

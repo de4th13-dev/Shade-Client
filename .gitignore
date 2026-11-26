@@ -2,3 +2,12 @@ node_modules/
 dist/
 .shade-build-*/
 .shade-dist-backup/
+
+.shade-dist-backup-*/
+*.pem
+*.crx
+*.xpi
+release/
+web-ext-artifacts/
+__pycache__/
+.test-venv/

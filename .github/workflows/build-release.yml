@@ -11,9 +11,9 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  build_chromium:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,34 +24,167 @@ jobs:
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then npm ci --include=dev; else npm install --include=dev; fi
-      - run: npm run build
+      - run: npm test
+      - run: npm run build -- chromium
       - run: npx --no-install playwright install --with-deps chromium
       - run: npm run test:browser
-      - name: Package extension
+      - name: Package Chromium extension
         run: |
           mkdir -p release/shade-client
-          cp -a dist/. release/shade-client/
-          (cd release && zip -qr ../shade-client.zip shade-client)
-          unzip -t shade-client.zip
+          cp -a dist/chromium/. release/shade-client/
+          (cd release && zip -qr shade-chromium.zip shade-client)
+          unzip -t release/shade-chromium.zip
+          cp package-lock.json release/
       - uses: actions/upload-artifact@v4
         with:
-          name: shade-client
-          path: shade-client.zip
+          name: shade-chromium
+          path: |
+            release/shade-chromium.zip
+            release/package-lock.json
           if-no-files-found: error
 
-  publish:
+  build_firefox:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci --include=dev; else npm install --include=dev; fi
+      - run: npm test
+      - run: npm run build -- firefox
+      - run: npx --no-install web-ext lint --source-dir dist/firefox
+      - uses: browser-actions/setup-firefox@v1
+        id: firefox
+        with:
+          firefox-version: latest-esr
+      - name: Install Firefox test dependencies
+        run: |
+          python3 -m venv .test-venv
+          .test-venv/bin/pip install 'selenium==4.38.0'
+      - name: Test Firefox extension
+        env:
+          FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
+        run: .test-venv/bin/python tools/test-firefox.py
+      - name: Package unsigned test build and review sources
+        run: |
+          mkdir -p release
+          (cd dist/firefox && zip -qr ../../release/shade-firefox-unsigned.xpi .)
+          unzip -t release/shade-firefox-unsigned.xpi
+          zip -qr release/shade-firefox-source.zip src tools package.json package-lock.json README.md .gitignore -x '*/__pycache__/*'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shade-firefox-unsigned
+          path: |
+            release/shade-firefox-unsigned.xpi
+            release/shade-firefox-source.zip
+          if-no-files-found: error
+
+  publish_zip:
     if: github.event_name == 'release'
-    needs: build
+    needs: build_chromium
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: shade-client
+          name: shade-chromium
       - name: Attach ZIP to release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$RELEASE_TAG" shade-client.zip --clobber
+        run: gh release upload "$RELEASE_TAG" shade-chromium.zip --clobber
+
+  publish_crx:
+    if: github.event_name == 'release'
+    needs: build_chromium
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: shade-chromium
+          path: ci-artifacts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare Chromium packer
+        run: |
+          cp ci-artifacts/package-lock.json .
+          npm ci --include=dev
+          npx --no-install playwright install --with-deps chromium
+          unzip -q ci-artifacts/shade-chromium.zip -d ci-artifacts
+      - name: Sign CRX3
+        env:
+          CRX_PRIVATE_KEY: ${{ secrets.CRX_PRIVATE_KEY }}
+        run: |
+          browser=$(node --input-type=module -e 'import {chromium} from "playwright"; console.log(chromium.executablePath())')
+          bash tools/pack-crx.sh "$browser" ci-artifacts/shade-client shade-chromium.crx
+      - name: Attach CRX to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" shade-chromium.crx --clobber
+
+  publish_firefox:
+    if: github.event_name == 'release'
+    needs: build_firefox
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: shade-firefox-unsigned
+          path: ci-artifacts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare Firefox signing tools
+        run: |
+          mkdir -p review-source firefox-dist signed
+          unzip -q ci-artifacts/shade-firefox-source.zip -d review-source
+          unzip -q ci-artifacts/shade-firefox-unsigned.xpi -d firefox-dist
+          cd review-source
+          npm ci --include=dev
+      - name: Request Mozilla signature (unlisted)
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          : "${WEB_EXT_API_KEY:?Configure AMO_JWT_ISSUER in repository secrets}"
+          : "${WEB_EXT_API_SECRET:?Configure AMO_JWT_SECRET in repository secrets}"
+          review-source/node_modules/.bin/web-ext sign \
+            --channel unlisted --source-dir firefox-dist --artifacts-dir signed \
+            --upload-source-code ci-artifacts/shade-firefox-source.zip --timeout 1200000
+          shopt -s nullglob
+          files=(signed/*.xpi)
+          [[ ${#files[@]} == 1 ]]
+          python3 - "${files[0]}" <<'PY'
+          import sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as z:
+              assert 'manifest.json' in z.namelist()
+              assert any(n.lower() == 'meta-inf/mozilla.rsa' for n in z.namelist()), 'Missing Mozilla signature'
+              assert z.testzip() is None
+          PY
+          cp "${files[0]}" shade-firefox.xpi
+      - name: Attach signed XPI to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" shade-firefox.xpi --clobber

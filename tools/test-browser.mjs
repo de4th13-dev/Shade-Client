@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
-const extension = fileURLToPath(new URL('../dist/', import.meta.url));
+const extension = fileURLToPath(new URL('../dist/chromium/', import.meta.url));
 const profile = await mkdtemp(join(tmpdir(), 'shade-browser-'));
 let context;
 try {

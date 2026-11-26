@@ -1,20 +1,23 @@
 {
   "private": true,
   "name": "shade-client",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "build": "node tools/stage-opaque.mjs",
-    "test:browser": "node tools/test-browser.mjs"
+    "test:browser": "node tools/test-browser.mjs",
+    "test": "node tools/test-popup.mjs && node tools/test-background.mjs && node tools/test-manifests.mjs",
+    "test:firefox": "python3 tools/test-firefox.py"
   },
   "dependencies": {
     "@serenity-kit/opaque": "1.1.0"
   },
   "devDependencies": {
     "esbuild": "0.25.12",
-    "playwright": "1.56.1"
+    "playwright": "1.56.1",
+    "web-ext": "9.4.0"
   }
 }

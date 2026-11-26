@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 const script = pathToFileURL(resolve('src/popup.js')).href;
+let namespace = 'chrome';
 const tick = () => new Promise(r => setImmediate(r));
 async function setup(query, {grant = true, profiles = []} = {}) {
   const nodes = new Map(), messages = [], windows = [], permissions = [];
   let closed = false, resolvePermission;
+  delete globalThis.browser; delete globalThis.chrome;
   const el = id => {
     if (!nodes.has(id)) nodes.set(id, {value:'', hidden:true, style:{}, focus(){}, replaceChildren(){}, append(){}, className:''});
     return nodes.get(id);
@@ -14,7 +16,7 @@ async function setup(query, {grant = true, profiles = []} = {}) {
   globalThis.location = {search:query};
   globalThis.document = {getElementById:el, body:{classList:{add(){}}}, createElement:()=>el(Symbol())};
   globalThis.window = {close(){closed=true}};
-  globalThis.chrome = {
+  globalThis[namespace] = {
     runtime:{getURL:p=>`chrome-extension://test/${p}`, sendMessage:async msg=>{
       messages.push(msg);
       return msg.action==='status'?{ok:true,enabled:true,profiles}:{ok:true};
@@ -25,6 +27,8 @@ async function setup(query, {grant = true, profiles = []} = {}) {
   await import(script+'?case='+Math.random()); await tick();
   return {el,messages,windows,permissions,get closed(){return closed}, allow:()=>resolvePermission(grant)};
 }
+for (const name of ['chrome','browser']) {
+namespace=name;
 {
   const t=await setup('');
   assert.equal(t.el('addForm').hidden,true);
@@ -45,4 +49,5 @@ for (const grant of [true,false]) {
   assert.equal(t.closed,grant);
   if (grant) assert.equal(t.el('password').value,'');
 }
-console.log('Popup: separate window, first permission approval and denial OK');
+}
+console.log('Popup (Chromium and Firefox API mocks): separate window, first permission approval and denial OK');

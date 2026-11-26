@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {manifestFor,FIREFOX_ID} from './manifests.mjs';
+const c=manifestFor('chromium'), f=manifestFor('firefox');
+assert.equal(c.background.service_worker,'background.js');
+assert.deepEqual(f.background.scripts,['background.js']);
+assert.equal(f.background.service_worker,undefined);
+assert.equal(f.minimum_chrome_version,undefined);
+assert.equal(f.browser_specific_settings.gecko.id,FIREFOX_ID);
+assert.equal(c.version,f.version);
+assert.deepEqual(c.permissions,f.permissions);
+assert.deepEqual(c.optional_host_permissions,f.optional_host_permissions);
+assert.deepEqual(c.content_security_policy,f.content_security_policy);
+assert.throws(()=>manifestFor('unknown'));
+console.log('Manifest variants OK');
